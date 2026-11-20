@@ -29,7 +29,7 @@ const setup = (opts: { replyText?: string; authOk?: boolean; authThrows?: boolea
   const haiku = makeModel('anthropic', 'claude-haiku-4-5', { input: 0.8, output: 4 })
   const kimi = makeModel('openrouter', 'moonshotai/kimi-k2.7-code', { input: 0.5, output: 1.5 })
   const models = [sonnet, haiku, kimi]
-  const calls: { model: ModelLike; prompt: string }[] = []
+  const calls: { model: ModelLike; prompt: string; systemPrompt?: string }[] = []
 
   const registry: ModelRegistryLike<ModelLike> = {
     getAvailable: () => models,
@@ -45,7 +45,7 @@ const setup = (opts: { replyText?: string; authOk?: boolean; authThrows?: boolea
         first && Array.isArray(first.content)
           ? first.content.map(c => (c.type === 'text' ? c.text : '')).join('')
           : ''
-      calls.push({ model, prompt: text })
+      calls.push({ model, prompt: text, systemPrompt: ctx.systemPrompt })
       return {
         result: async () => ({
           role: 'assistant',
@@ -244,6 +244,28 @@ describe('commands', () => {
         expect(stats.report.body).toContain('depend from → depend on')
       }
 
+      await runGrammarCommand({
+        args: 'config system_prompt_append <|think_off|>',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      const cfgView = await runGrammarCommand({
+        args: 'config',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(cfgView.kind).toBe('report')
+      if (cfgView.kind === 'report') {
+        expect(cfgView.report.body).toContain('system_prompt_append: <|think_off|>')
+        expect(cfgView.report.body).toContain('system_prompt_append_reviewer: (inherit system_prompt_append)')
+      }
+
       const rev = await runGrammarCommand({
         args: 'review 30d',
         paths: env.paths,
@@ -258,8 +280,9 @@ describe('commands', () => {
         expect(rev.report.kind).toBe('review')
         expect(rev.askTurn?.q).toBe('/grammar review 30d')
       }
-      // Coaching uses ctx.model (sonnet) when model setting is "auto".
+      // Coaching uses ctx.model (sonnet) when model setting is "auto" and inherits system_prompt_append.
       expect(env.calls[0]?.model.id).toBe('claude-sonnet-4-5')
+      expect(env.calls[0]?.systemPrompt?.endsWith('\n<|think_off|>')).toBe(true)
 
       const ask = await runGrammarCommand({
         args: 'ask why prepositions?',
@@ -274,6 +297,116 @@ describe('commands', () => {
       if (ask.kind === 'report') {
         expect(ask.askTurn?.q).toBe('why prepositions?')
       }
+      expect(env.calls[1]?.systemPrompt?.endsWith('\n<|think_off|>')).toBe(true)
+
+      await runGrammarCommand({
+        args: 'config system_prompt_append_reviewer <|think_on|>',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      const cfgWithReviewer = await runGrammarCommand({
+        args: 'config',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(cfgWithReviewer.kind).toBe('report')
+      if (cfgWithReviewer.kind === 'report') {
+        expect(cfgWithReviewer.report.body).toContain('system_prompt_append_reviewer: <|think_on|>')
+      }
+
+      await runGrammarCommand({
+        args: 'review 30d',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[2]?.systemPrompt?.endsWith('\n<|think_on|>')).toBe(true)
+      expect(env.calls[2]?.systemPrompt?.includes('<|think_off|>')).toBe(false)
+
+      await runGrammarCommand({
+        args: 'ask why prepositions?',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[3]?.systemPrompt?.endsWith('\n<|think_on|>')).toBe(true)
+      expect(env.calls[3]?.systemPrompt?.includes('<|think_off|>')).toBe(false)
+
+      const clearAppend = await runGrammarCommand({
+        args: 'config system_prompt_append_reviewer ""',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(clearAppend).toMatchObject({ kind: 'notify', message: expect.stringContaining('system_prompt_append_reviewer = ""') })
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).system_prompt_append_reviewer).toBe('')
+      const cfgEmptyReviewer = await runGrammarCommand({
+        args: 'config',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(cfgEmptyReviewer.kind).toBe('report')
+      if (cfgEmptyReviewer.kind === 'report') {
+        expect(cfgEmptyReviewer.report.body).toContain('system_prompt_append_reviewer: (none)')
+      }
+      await runGrammarCommand({
+        args: 'review 30d',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[4]?.systemPrompt?.includes('<|think_off|>')).toBe(false)
+      expect(env.calls[4]?.systemPrompt?.includes('<|think_on|>')).toBe(false)
+
+      await runGrammarCommand({
+        args: 'config system_prompt_append_reviewer unset',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).system_prompt_append_reviewer).toBeUndefined()
+      await runGrammarCommand({
+        args: 'review 30d',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[5]?.systemPrompt?.endsWith('\n<|think_off|>')).toBe(true)
+
+      await runGrammarCommand({
+        args: 'config system_prompt_append unset',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).system_prompt_append).toBeUndefined()
 
       const clear = await runGrammarCommand({
         args: 'ask clear',
@@ -288,6 +421,10 @@ describe('commands', () => {
       expect(getGrammarCompletions('')?.map(c => c.value)).toContain('render')
       expect(getGrammarCompletions('render ')?.map(c => c.value)).toEqual(['entry', 'widget', 'both', 'off'])
       expect(getGrammarCompletions('ask memory ')?.map(c => c.value)).toEqual(['on', 'off'])
+      expect(getGrammarCompletions('config sys')?.map(c => c.value)).toEqual([
+        'system_prompt_append',
+        'system_prompt_append_reviewer',
+      ])
       expect(getGrammarCompletions('model ', ['anthropic/claude-haiku-4-5'])?.map(c => c.value)).toEqual([
         'auto',
         'off',

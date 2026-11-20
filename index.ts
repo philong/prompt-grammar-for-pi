@@ -18,7 +18,7 @@ import {
 import type { Lists, Paths, Settings } from './config'
 import { ASK_MEMORY } from './history'
 import { migrateFromPriorBuilds } from './migrate'
-import { resolveCheckModel, runModelCall } from './model'
+import { appendSystemPrompt, resolveCheckModel, runModelCall } from './model'
 import type { ResolvedModel } from './model'
 import { STREAK_FROM, formatReportPlain, linesOf, renderCheckEntry, renderReportEntry } from './render'
 import { MAX_FAILS, applyCheckOutcome, emptySession, rebuildSessionState, recordToHistoryFile } from './state'
@@ -383,14 +383,17 @@ export const createGrammarExtension = (opts: ExtensionFactoryOptions = {}) => {
       inFlight.add(item)
 
       const ignore = compileIgnore(lists.ignore)
-      const sysPrompt = system({
-        natural: settings.natural,
-        language: settings.language,
-        dialect: settings.dialect,
-        showWhy: settings.showWhy,
-        kind: writesHistory,
-        ignore: ignore.words,
-      })
+      const sysPrompt = appendSystemPrompt(
+        system({
+          natural: settings.natural,
+          language: settings.language,
+          dialect: settings.dialect,
+          showWhy: settings.showWhy,
+          kind: writesHistory,
+          ignore: ignore.words,
+        }),
+        settings.systemPromptAppend,
+      )
 
       scheduleTimer(() => {
         pruneExpiredUnmatched()

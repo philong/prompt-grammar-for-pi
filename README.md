@@ -65,7 +65,7 @@ Periods accept `7d`, `30d`, or `since YYYY-MM-DD` (UTC days).
 
 ## Settings
 
-Stored in `~/.pi/agent/grammar.json` (`0600` on POSIX) and optionally overridden per trusted project in `<cwd>/.pi/grammar.json` (except `model`, which project configs cannot override):
+Stored in `~/.pi/agent/grammar.json` (`0600` on POSIX) and optionally overridden per trusted project in `<cwd>/.pi/grammar.json` (except `model`, `system_prompt_append`, and `system_prompt_append_reviewer`, which project configs cannot override):
 
 | Key | Default | Description |
 |---|---|---|
@@ -81,7 +81,16 @@ Stored in `~/.pi/agent/grammar.json` (`0600` on POSIX) and optionally overridden
 | `ask_memory` | `true` | Remember last 5 asks/reviews on the session branch. |
 | `render` | `entry` | `entry`, `widget`, `both`, or `off`. |
 | `model` | `auto` | `auto`, `off`, or `<provider>/<modelId>`. |
+| `system_prompt_append` | `""` | Text appended to the system prompt on prompt checks, and inherited by `/grammar review` and `/grammar ask` unless `system_prompt_append_reviewer` is set (e.g. `<\|think_off\|>` for Gemma 4). Cannot be set in `.pi/grammar.json`. |
+| `system_prompt_append_reviewer` | `(inherit)` | Override appended to the system prompt on `/grammar review` and `/grammar ask` (e.g. `<\|think_on\|>`, or `""` to append nothing). Cannot be set in `.pi/grammar.json`. |
 | `timeout_ms` | `30000` | Timeout (ms) for live prompt checks. |
+
+For example, to disable thinking on live prompt checks while enabling it for `/grammar review` and `/grammar ask`:
+
+```text
+/grammar config system_prompt_append <|think_off|>
+/grammar config system_prompt_append_reviewer <|think_on|>
+```
 
 ## Ignore and skip lists
 

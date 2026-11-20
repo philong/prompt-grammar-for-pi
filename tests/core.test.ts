@@ -58,16 +58,23 @@ describe('config', () => {
     expect(def.render).toBe('entry')
     expect(def.language).toBe(ENGLISH)
     expect(def.model).toBe('auto')
+    expect(def.systemPromptAppend).toBe('')
+    expect(def.systemPromptAppendReviewer).toBeUndefined()
     expect(def.enabled).toBe(true)
 
     const custom = settingsFrom({
       model: 'openai/gpt-4.1-mini',
       render: 'widget',
       language: 'english, french',
+      system_prompt_append: '  <|think_off|>  ',
+      system_prompt_append_reviewer: '  <|think_on|>  ',
     })
     expect(custom.model).toBe('openai/gpt-4.1-mini')
     expect(custom.render).toBe('widget')
     expect(custom.language).toBe('English, French')
+    expect(custom.systemPromptAppend).toBe('<|think_off|>')
+    expect(custom.systemPromptAppendReviewer).toBe('<|think_on|>')
+    expect(settingsFrom({ system_prompt_append_reviewer: '' }).systemPromptAppendReviewer).toBe('')
 
     expect(settingsFrom({ model: 'OFF' }).model).toBe('off')
     expect(settingsFrom({ model: 'AUTO' }).model).toBe('auto')
@@ -87,6 +94,8 @@ describe('config', () => {
         join(repoDir, '.pi', 'grammar.json'),
         JSON.stringify({
           model: 'evil/expensive-model',
+          system_prompt_append: 'evil override',
+          system_prompt_append_reviewer: 'evil reviewer override',
           natural: false,
           ignore: ['myprojword'],
           history: false,
@@ -105,12 +114,23 @@ describe('config', () => {
       const loadedTrusted = loadConfigAndLists(trusted)
       expect(loadedTrusted.settings.natural).toBe(false)
       expect(loadedTrusted.settings.model).toBe('auto')
+      expect(loadedTrusted.settings.systemPromptAppend).toBe('')
+      expect(loadedTrusted.settings.systemPromptAppendReviewer).toBeUndefined()
       expect(loadedTrusted.lists.ignore).toEqual(['myprojword'])
       expect(loadedTrusted.projectAllowsHistory).toBe(false)
 
-      writeFileSync(join(agentDir, 'grammar.json'), JSON.stringify({ model: 'anthropic/claude-haiku-4-5' }))
+      writeFileSync(
+        join(agentDir, 'grammar.json'),
+        JSON.stringify({
+          model: 'anthropic/claude-haiku-4-5',
+          system_prompt_append: '<|think_off|>',
+          system_prompt_append_reviewer: '<|think_on|>',
+        }),
+      )
       const withGlobal = loadConfigAndLists(trusted)
       expect(withGlobal.settings.model).toBe('anthropic/claude-haiku-4-5')
+      expect(withGlobal.settings.systemPromptAppend).toBe('<|think_off|>')
+      expect(withGlobal.settings.systemPromptAppendReviewer).toBe('<|think_on|>')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

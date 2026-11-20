@@ -68,7 +68,7 @@ type FakeHarness = {
 const createHarness = (opts: {
   mode?: ExtensionMode
   shutdownWaitMs?: number
-  onStream?: (promptText: string, signal?: AbortSignal) => Promise<AssistantMessage>
+  onStream?: (promptText: string, signal?: AbortSignal, systemPrompt?: string) => Promise<AssistantMessage>
 } = {}): FakeHarness => {
   const agentDir = mkdtempSync(join(tmpdir(), 'prompt-grammar-ext-'))
   const sonnet = makeModel('anthropic', 'claude-sonnet-4-5', 3)
@@ -127,7 +127,7 @@ const createHarness = (opts: {
           const msg = context.messages[0]
           const txt = Array.isArray(msg?.content) ? msg.content.map((p: any) => p.text ?? '').join('') : ''
           return opts.onStream
-            ? opts.onStream(txt, streamOpts?.signal)
+            ? opts.onStream(txt, streamOpts?.signal, context.systemPrompt)
             : Promise.resolve(assistantMsg(model, '{"english":true,"fixes":[]}'))
         },
       }),
@@ -539,6 +539,32 @@ describe('extension', () => {
       expect(tuiOut.entries.length).toBe(1)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('appends configured system_prompt_append (not reviewer override) to live prompt check systemPrompt', async () => {
+    let seenSystemPrompt: string | undefined
+    const h = createHarness({
+      onStream: async (_txt, _signal, systemPrompt) => {
+        seenSystemPrompt = systemPrompt
+        return assistantMsg(makeModel('anthropic', 'claude-haiku-4-5'), '{"english":true,"fixes":[]}')
+      },
+    })
+    try {
+      mkdirSync(h.agentDir, { recursive: true })
+      writeFileSync(
+        join(h.agentDir, 'grammar.json'),
+        JSON.stringify({ system_prompt_append: '<|think_off|>', system_prompt_append_reviewer: '<|think_on|>' }),
+      )
+      await h.emit('session_start', { type: 'session_start', reason: 'startup' })
+      await h.emit('input', { type: 'input', text: 'check my grammar please', source: 'interactive' })
+      await flushTicks()
+
+      expect(seenSystemPrompt).toBeDefined()
+      expect(seenSystemPrompt?.endsWith('\n<|think_off|>')).toBe(true)
+      expect(seenSystemPrompt?.includes('<|think_on|>')).toBe(false)
+    } finally {
+      h.cleanup()
     }
   })
 })

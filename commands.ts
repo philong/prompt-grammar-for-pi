@@ -47,6 +47,7 @@ import {
 } from './history'
 import type { History } from './history'
 import {
+  appendSystemPrompt,
   checkModelAuth,
   estimateCost,
   parseExplicitModelId,
@@ -178,6 +179,9 @@ const parseConfigValue = <M extends ModelLike>(
     }
     case 'model':
       return validateModelSetting(v, registry)
+    case 'system_prompt_append':
+    case 'system_prompt_append_reviewer':
+      return { ok: true, value: v === '""' || v === "''" ? '' : v }
     default:
       return { ok: false, error: `Unknown setting "${key}". Valid keys: ${CONFIG_KEYS.join(', ')}.` }
   }
@@ -270,6 +274,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
   now = Date.now(),
 }: CommandContext<M>): Promise<CommandOutput> => {
   const { settings: s, lists, projectAllowsHistory } = loadConfigAndLists(paths)
+  const reviewerAppend = s.systemPromptAppendReviewer ?? s.systemPromptAppend
   const checkResolved = resolveCheckModel(s.model, { activeModel, registry, scopedModels })
   const coachResolved = resolveCoachingModel(s.model, { activeModel, registry, scopedModels })
   const coachName = coachResolved.kind === 'ready' ? coachResolved.spec : 'the session model'
@@ -543,10 +548,13 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
         }
       }
       const summary = summaryOf(h, loaded.ignore, period, now, picked.show ? picked.lang : undefined)
-      const r = await runModelCall(registry, coachResolved.model, reviewSystem(picked.lang), reviewInput(fixes), {
-        maxTokens: 8000,
-        timeoutMs: 180_000,
-      })
+      const r = await runModelCall(
+        registry,
+        coachResolved.model,
+        appendSystemPrompt(reviewSystem(picked.lang), reviewerAppend),
+        reviewInput(fixes),
+        { maxTokens: 8000, timeoutMs: 180_000 },
+      )
       if (!r.ok) {
         return { kind: 'notify', level: 'error', message: `No review: ${r.error}` }
       }
@@ -635,7 +643,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
       const r = await runModelCall(
         registry,
         coachResolved.model,
-        ASK_SYSTEM,
+        appendSystemPrompt(ASK_SYSTEM, reviewerAppend),
         askInput(fixes, split.period.label, recent, turns, question),
         { maxTokens: 4000, timeoutMs: 120_000 },
       )
@@ -712,6 +720,8 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
             `ask_memory: ${s.askMemory}`,
             `render: ${s.render}`,
             `model: ${s.model}`,
+            `system_prompt_append: ${s.systemPromptAppend || '(none)'}`,
+            `system_prompt_append_reviewer: ${s.systemPromptAppendReviewer === undefined ? '(inherit system_prompt_append)' : s.systemPromptAppendReviewer || '(none)'}`,
             `timeout_ms: ${s.timeoutMs}`,
             '',
             `Set with: /grammar config <key> <value> (or \`unset\` to reset).`,
@@ -731,7 +741,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
       if (!res.ok) {
         return { kind: 'notify', level: 'error', message: res.error }
       }
-      const shown = parsed.value === undefined ? '(default)' : String(parsed.value)
+      const shown = parsed.value === undefined ? '(default)' : parsed.value === '' ? '""' : String(parsed.value)
       return {
         kind: 'notify',
         clearWidget: key === 'render' && (parsed.value === 'entry' || parsed.value === 'off'),

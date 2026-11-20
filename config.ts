@@ -34,6 +34,10 @@ export type Settings = {
   render: RenderMode
   /** Model spec: 'auto' (default), 'off', or '<provider>/<modelId>'. */
   model: string
+  /** Optional text appended to the system prompt on model calls (e.g. '<|think_off|>'). */
+  systemPromptAppend: string
+  /** Optional override appended to the system prompt on `/grammar review` and `/grammar ask` (inherits `systemPromptAppend` when `undefined`; `""` appends nothing). */
+  systemPromptAppendReviewer: string | undefined
   /** Max time (ms) a live prompt check waits before aborting. */
   timeoutMs: number
 }
@@ -127,6 +131,9 @@ export const settingsFrom = (o: Record<string, unknown> = {}): Settings => ({
   askMemory: o.ask_memory !== false,
   render: normalizeRender(o.render) ?? 'entry',
   model: modelOf(o.model),
+  systemPromptAppend: typeof o.system_prompt_append === 'string' ? o.system_prompt_append.trim() : '',
+  systemPromptAppendReviewer:
+    typeof o.system_prompt_append_reviewer === 'string' ? o.system_prompt_append_reviewer.trim() : undefined,
   timeoutMs: clamp(o.timeout_ms, 2000, 120000, 30000),
 })
 
@@ -293,12 +300,14 @@ export const loadConfigAndLists = (
     }
   }
 
-  // Project settings can override global settings except `model` for safety.
+  // Project settings can override global settings except `model`, `system_prompt_append`, and `system_prompt_append_reviewer` for safety.
   const mergedRaw: Record<string, unknown> = { ...g.raw, ...projectRaw }
-  if (g.raw.model !== undefined) {
-    mergedRaw.model = g.raw.model
-  } else {
-    delete mergedRaw.model
+  for (const key of ['model', 'system_prompt_append', 'system_prompt_append_reviewer'] as const) {
+    if (g.raw[key] !== undefined) {
+      mergedRaw[key] = g.raw[key]
+    } else {
+      delete mergedRaw[key]
+    }
   }
   const settings = settingsFrom(mergedRaw)
   const lists = mergeLists(globalLists, projectLists)
@@ -340,5 +349,7 @@ export const CONFIG_KEYS = [
   'ask_memory',
   'render',
   'model',
+  'system_prompt_append',
+  'system_prompt_append_reviewer',
   'timeout_ms',
 ] as const

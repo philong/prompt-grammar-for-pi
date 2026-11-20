@@ -202,6 +202,12 @@ export const estimateCost = (model: Pick<ModelLike, 'cost'>): CostEstimate => {
   return { perCheckUsd, per50Usd, text }
 }
 
+/** Append optional user-configured text (e.g. template toggle markers) to a system prompt. */
+export const appendSystemPrompt = (base: string, append: string): string => {
+  const extra = append.trim()
+  return extra === '' ? base : `${base}\n${extra}`
+}
+
 /** Run a single model completion via Pi's `streamSimple` with reasoning omitted and an explicit AbortController timeout. */
 export const runModelCall = async <M extends ModelLike>(
   registry: Pick<ModelRegistryLike<M>, 'streamSimple'>,

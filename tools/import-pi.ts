@@ -25,7 +25,7 @@ import {
 import type { Settings } from '../config'
 import { EMPTY_HISTORY, KEEP_DAYS, dayOf, historyText, importWindow, merge, parseHistory, record } from '../history'
 import type { History } from '../history'
-import { resolveCheckModel, runModelCall } from '../model'
+import { appendSystemPrompt, resolveCheckModel, runModelCall } from '../model'
 import { atomicWrite } from '../state'
 import type { GrammarFix, GrammarReply } from '../types'
 
@@ -242,7 +242,10 @@ const main = async () => {
   const checkSpec = resolved.spec
 
   const ignore = compileIgnore(lists.ignore)
-  const sys = `${system({ natural: false, language: s.language, dialect: s.dialect, showWhy: s.showWhy, kind: true, ignore: ignore.words })}\n${BATCH}`
+  const sys = appendSystemPrompt(
+    `${system({ natural: false, language: s.language, dialect: s.dialect, showWhy: s.showWhy, kind: true, ignore: ignore.words })}\n${BATCH}`,
+    s.systemPromptAppend,
+  )
   const callTimeoutMs = Math.max(CALL_TIMEOUT_MS, delayMs + 60_000)
   const results = new Map<number, { fixes: GrammarFix[]; language: string } | null>()
   let done = 0

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import type { AssistantMessage, Context, ModelsSimpleStreamOptions } from '@earendil-works/pi-ai'
 
 import {
+  appendSystemPrompt,
   checkModelAuth,
   estimateCost,
   parseExplicitModelId,
@@ -162,6 +163,12 @@ describe('model', () => {
   test('estimateCost formats free and paid estimates', () => {
     expect(estimateCost(makeModel({ cost: { input: 0, output: 0 } })).text).toContain('$0')
     expect(estimateCost(makeModel({ cost: { input: 1, output: 5 } })).text).toContain('/check')
+  })
+
+  test('appendSystemPrompt leaves empty appends unchanged and adds trimmed suffix on a new line', () => {
+    expect(appendSystemPrompt('base prompt', '')).toBe('base prompt')
+    expect(appendSystemPrompt('base prompt', '   \n ')).toBe('base prompt')
+    expect(appendSystemPrompt('base prompt', '  <|think_off|>  ')).toBe('base prompt\n<|think_off|>')
   })
 
   test('runModelCall omits reasoning, checks stopReason, and enforces AbortController timeout', async () => {
