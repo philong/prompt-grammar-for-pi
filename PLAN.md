@@ -59,6 +59,8 @@ All checked in `../pi`. Cited as `file:line`.
 **Prompt capture.** `pi.on("input", …)` sees typed, RPC and `sendUserMessage` prompts, before skill and
 template expansion. Extension commands run before it, so `/grammar …` never reaches it
 (`core/agent-session.ts:2177-2211`, `_preparePrompt` at `:2217-2247`). Return `{ action: "continue" }`.
+`sendUserMessage` arrives with `source: "extension"` (`:2571-2576`), which the gate skips so programmatic
+prompts from other extensions are not proofread.
 
 **`input` fires before the prompt is persisted, sometimes long before.** After the input handlers, `_preparePrompt`
 still expands templates, validates model and auth, and then either starts the run or, when the agent is
@@ -72,11 +74,20 @@ of the session that is current at call time (`core/session-manager.ts:1307-1319`
 component before the streaming component** when the agent is mid-run (`:4046-4062`). So an appended entry
 shows after the last persisted message, not at the end of the screen.
 
-**Extension `message_end` runs before the message is persisted.** `_emitExtensionEvent(event)` is awaited,
-and only then does the `message_end` branch call `sessionManager.appendMessage`
+**Extension `message_end` runs before the message is persisted.** `_emitExtensionEvent(event)` awaits every
+extension's `message_end` handler before calling `sessionManager.appendMessage`
 (`core/agent-session.ts:1212-1237`). An entry appended in a user `message_end` handler becomes the
-prompt's parent — it renders **above** the prompt. Do not append there. But after that handler returns, the
-save is synchronous, so a `setTimeout(0)` scheduled from it runs with `getLeafId()` equal to the prompt's entry.
+prompt's parent — it renders **above** the prompt — and an async handler in another extension can delay
+`appendMessage` past a blind `setTimeout(0)`. Also, because `addCustomEntryToChat` splices before
+`this.streamingComponent` (`interactive-mode.ts:4057-4063`) and the assistant message is persisted only at
+assistant `message_end`, a check only needs to beat the first assistant `message_end`, not first token, to
+render directly under the prompt.
+
+**Session lifecycle and stale runtimes.** `/new`, `/resume`, `/fork`, and `/reload` replace the
+`AgentSession`, emit `session_shutdown`, and call `runtime.invalidate()`
+(`core/agent-session-runtime.ts:186-243`, `core/extensions/loader.ts:200-207`). There is no `session_switch`
+event; `session_start` fires with `reason: "startup" | "reload" | "new" | "resume" | "fork"`. Calling
+`pi.appendEntry()` on a stale runtime throws via `assertActive()` (`loader.ts:405-408`).
 
 **Entries are cheap and invisible to the model.** A `custom` entry never enters LLM context
 (`docs/session-format.md`, CustomEntry). With no renderer for its `customType`, it renders nothing
@@ -101,11 +112,14 @@ width change (`docs/extensions.md`, `pi.registerMarkdownTransformer`). `messageI
 restored rows. A live user row is not re-transformed when extension state changes.
 
 **Models.** `ctx.modelRegistry` is a `ModelRegistry` class with `getAvailable()`, `find(provider, id)`,
-`streamSimple(model, context, opts)`, `complete(...)`, `getApiKeyAndHeaders(model)`, `getProviderAuth(provider)`
-(`core/model-registry.ts:48-194`). `completeSimple` exists on the runtime, not on the registry, so the port
-calls `streamSimple` and collects the result. `Model` carries `cost`, `contextWindow`, `input`, `reasoning`.
-OpenAI-compatible servers (Ollama, llama.cpp, LM Studio, OpenRouter) are configured in
-`~/.pi/agent/models.json` (`docs/models.md#configure-a-compatible-endpoint`, `docs/models-configuration.md`).
+`hasConfiguredAuth(model)`, `streamSimple(model, context, opts)`, `complete(...)`,
+`getApiKeyAndHeaders(model)`, `getProviderAuth(provider)` (`core/model-registry.ts:48-196`). `find()` does
+not check credentials (`hasConfiguredAuth(model)` does, `:72-87`). `completeSimple` exists on the runtime,
+not on the registry, so the port calls `streamSimple` and collects the result; `streamSimple(…).result()`
+resolves (rather than rejects) with `stopReason: "error" | "aborted"` on provider errors or aborts. `Model`
+carries `cost`, `contextWindow`, `input`, `reasoning`. OpenAI-compatible servers (Ollama, llama.cpp, LM
+Studio, OpenRouter) are configured in `~/.pi/agent/models.json`
+(`docs/models.md#configure-a-compatible-endpoint`, `docs/models-configuration.md`).
 
 **Reasoning is off when `reasoning` is omitted.** `SimpleStreamOptions.reasoning` is a `ThinkingLevel`:
 `minimal | low | medium | high | xhigh | max` (`ai/src/providers/model-schema.ts:16`). `"off"` exists only in
@@ -153,62 +167,86 @@ OpenAI-compatible servers (Ollama, llama.cpp, LM Studio, OpenRouter) are configu
   (filter `input` includes `"text"`, `contextWindow ≥ 8000`; honour `ctx.scopedModels` when non-empty;
   sort by `cost.input + cost.output`; prefer a non-reasoning model, then a small-name match as
   tie-break). Use it when it is cheaper than `ctx.model`, else use `ctx.model`.
-- `"<provider>/<modelId>"`: `ctx.modelRegistry.find()`. `/grammar model` lists what the registry offers.
+- `"<provider>/<modelId>"`: `ctx.modelRegistry.find()`, then check `ctx.modelRegistry.hasConfiguredAuth(model)`;
+  warn in `/grammar model` and `/grammar help` when auth is missing instead of failing 3 checks. `/grammar model`
+  lists what the registry offers.
 - `"off"`: no checks, no calls.
+- Coaching commands (`/grammar review`, `/grammar ask`): use `ctx.model` when `model` is `"auto"` (falling
+  back to the check model), or the explicit `<provider>/<modelId>` when configured.
 - Always call with `reasoning` omitted (reasoning off, see the facts above), a token cap, and a timeout
-  from our own `AbortController`. `ctx.signal` is `undefined` at `input` time and is not used.
+  from our own `AbortController` (`ctx.signal` is `undefined` at `input` time and is not used). Inspect
+  `msg.stopReason` (`"error" | "aborted"`) on the resolved `AssistantMessage` and extract `type === "text"`
+  parts from `msg.content`.
 - Resolve at `session_start` and re-resolve on `pi.on("model_select")`. `model_select` does not fire on
   session restore, so the start call is required.
 - `/grammar help` prints the model, where it came from, and an estimated cost per check and per 50 prompts.
 
 ### Anchor
 
-One pending record per checked prompt, keyed by the prompt text and its `input` order:
+One FIFO pending record per checked prompt, ordered by `input` arrival:
 
-1. `input`: start the check. Store `sessionId = ctx.sessionManager.getSessionId()`.
-2. User `message_end` for that prompt: `setTimeout(0)`, then store `promptEntryId = getLeafId()`.
-   The save happens synchronously after the handler returns, so the leaf is the prompt by then.
-3. When both the result and `promptEntryId` are present: if `getSessionId()` still equals `sessionId` and
-   `promptEntryId` is on `getBranch()`, `appendEntry("grammar-check", …)`. Otherwise skip the entry; the
-   history record is still kept.
-4. A prompt that never persists (input handled by another extension, run aborted before the save) drops its
+1. `input`: skip `e.source === "extension"`. Start the check with a per-check `AbortController` and push a
+   pending record.
+2. User `message_end`: match the oldest unmatched pending record and resolve `promptEntryId` by searching
+   the tail of `ctx.sessionManager.getBranch()` for the persisted `user` message whose
+   `message.timestamp === event.message.timestamp` (retrying on next tick / `message_start` if another
+   extension's async `message_end` delayed persistence), rather than blindly reading `getLeafId()`.
+3. When both the result and `promptEntryId` are present: if `!disposed` and `promptEntryId` is on
+   `getBranch()`, `appendEntry("grammar-check", …)`. Otherwise skip the entry; the history record is still
+   kept.
+4. `session_shutdown`: set `disposed = true`, abort all in-flight `AbortController`s, and clear pending
+   timers/records so a stale runtime never calls `appendEntry` or `ctx.ui.*`.
+5. A prompt that never persists (input handled by another extension, run aborted before the save) drops its
    pending record at `agent_end` or after the timeout, whichever comes later.
 
 Result: the line is never above its prompt. It is directly under the prompt when the check beats the first
-assistant message; otherwise it comes after the last persisted message at append time.
+assistant `message_end`; otherwise it comes after the last persisted message at append time.
 
 ### Where fixes show
 
 `render` setting: `"entry"` (default) | `"widget"` | `"both"` | `"off"`.
 
-- `entry`: one `custom` entry per checked prompt, `customType: "grammar-check"`, carrying the full result.
-  The renderer draws struck-through source in `error`, the fix in `success`, the reason in `muted`, and the
-  native-speaker line below. Rendered only in TUI mode.
-- `widget`: the newest result above the editor, through `ctx.ui.setWidget("grammar", lines)`. This is also
-  the route for RPC mode, and the only one that is always current.
-- In print and json modes: no entry, no widget, no notify. History still works, commands still work.
+- In TUI and RPC modes, every checked prompt appends a `custom` entry (`customType: "grammar-check"`)
+  carrying the full result plus `display: boolean` (`render === "entry" || render === "both"`). The TUI
+  renderer draws struck-through source in `error`, the fix in `success`, the reason in `muted`, and the
+  native-speaker line below when `display` is true, and returns `undefined` when false (cleanly skipped by
+  `CustomEntryComponent.hasContent()`). Keeping the entry even when hidden preserves branch state across
+  render modes without retroactively revealing old checks if `render` changes later.
+- `widget` / `both`: the newest result above the editor, through `ctx.ui.setWidget("grammar", lines)`.
+- In RPC mode: `grammar-check` and `grammar-report` emit `entry_appended` data (entry renderers are
+  TUI-only); `widget` / `both` (and the RPC fallback when `entry` is set) use string-array `setWidget`, and
+  report commands also surface plain text via `ctx.ui.notify`.
+- In print and json modes: no entry, no widget, no notify, no migration banner. History recording still runs
+  for prompts; interactive `/grammar` commands are TUI/RPC-only.
 
-`/grammar hide` clears the widget; a `registerShortcut("ctrl+alt+g", …)` does the same.
+`/grammar hide` clears the widget; `pi.registerShortcut("ctrl+alt+g", …)` does the same.
 
 ### Session state
 
 Follows the pattern in `docs/extensions.md` (State Management): rebuild from `ctx.sessionManager.getBranch()`
-at `session_start`, `session_tree`, and after a session switch.
+at `session_start` (covering `startup`, `reload`, `new`, `resume`, `fork`) and `session_tree`.
 
-- Each check appends its entry, so the clean streak and the per-session failure count come back from the
-  branch, not from memory.
+- Each check appends `grammar-check`, so branch rebuild restores `streak`, `fails`, `lastError`, and
+  `recentFixes` (last 20 fixes, used by `/grammar ask`) without in-memory drift.
+- Append-only reset sentinels keep cleared state from returning on `/reload` or `/tree`: `/grammar on`
+  appends an invisible `grammar-state` entry (`{ failsReset: true }`) so 3 earlier errors no longer re-pause;
+  `/grammar ask clear` and `/grammar ask memory off` append a tombstone (`grammar-ask-turn`,
+  `{ cleared: true }`) so cleared exchanges stay forgotten.
 - Ask memory (last 5 asks and reviews) is appended as `customType: "grammar-ask-turn"`, which has no
   renderer and so stays invisible. `ask_memory: false` stops writing them.
 - A `grammar-report` entry (`customType: "grammar-report"`) carries the output of `help`, `stats`, `review`,
-  `ask`, and `ignore`, rendered as a block in the transcript. It stays out of model context and stays in
-  scrollback, which `notify` cannot do. One-line confirmations (`on`, `off`, `ignore add`) use `notify`.
+  `ask`, `ignore`, and `config`, rendered as a block in the transcript (and surfaced via `notify` in RPC
+  mode). It stays out of model context and stays in scrollback, which `notify` cannot do. One-line
+  confirmations (`on`, `off`, `ignore add`) use `notify`.
 
 ### Settings
 
 File store, because `pi.getSettings()` cannot write:
 
 - `~/.pi/agent/grammar.json` (user, through `getAgentDir()`), then `<cwd>/.pi/grammar.json` over it, read
-  only when `ctx.isProjectTrusted()`. Same merge rule and same `ignore`, `skip`, `"history": false` keys.
+  only when `ctx.isProjectTrusted()`. Project config cannot override `model` (matching agy's `endpoint*`
+  guard), preventing a repo from silently redirecting checks to an expensive model or different provider.
+  Same merge rule and same `ignore`, `skip`, `"history": false` keys.
 - Keys kept from agy: `enabled`, `natural`, `language`, `dialect`, `min_words`, `max_chars`, `show_why`,
   `history`, `clean`, `ask_memory`.
 - Changed: `display` → `render` (`entry|widget|both|off`); `endpoint*` → `model`; `timeout_ms` kept.
@@ -232,6 +270,7 @@ prompt-grammar-for-pi/
   state.ts                ~150  history file, atomic write  <- agy src/state.ts (trimmed)
   types.ts                 ~60  shared types                <- agy src/types.ts
   tests/*.test.ts             vitest
+tools/sync-from-agy.sh        sync copied core files from upstream agy
 tools/import-pi.ts        ~120  optional: backfill from Pi sessions
 README.md PRIVACY.md SECURITY.md LICENSE CHANGELOG.md .github/workflows/test.yml
 ```
@@ -245,15 +284,15 @@ devDependencies for types only, and must not appear in `dependencies`
 | Step | Work | Done when |
 |---|---|---|
 | 0 | Copy the agy core (`types`, `check`, `history`, `format` wording, `config`), add the header, port the agy tests from `bun:test` to vitest (import swap). | `history` + `check` + `config` tests pass under vitest in this repo, no Pi import. |
-| 1 | Placement spike, one file, no real call. Append `grammar-check` from four places: at `input`, at user `message_end`, 2 s after `input`, and through the [Anchor](#anchor) rule. Run each for an idle prompt and for a prompt queued while the agent streams. Also run `/tree` and `/new` while a 5 s fake check is pending. | Confirms in a live `pi` session: (a) the first two land above the prompt, (b) the 2 s one lands above a queued prompt, (c) the anchor rule lands under the prompt in both cases, (d) a branch or session switch skips the entry, (e) after a restart every line comes back in the same place. |
-| 2 | `model.ts`: `off` / `auto` / explicit id, cheapest-of-provider pick, `reasoning: "off"`, cost estimate. | A fresh session with no config file checks prompts against a small model of the active provider. `/grammar help` names the model and the cost. |
-| 3 | `index.ts` gate + call + `render.ts` entry route. | Ten typed prompts show correct lines under them in a live TUI session. Short prompts, `/commands`, and `skip`/`ignore` all pass through unchecked. |
-| 4 | Commands: `help`, `on/off`, `natural`, `render`, `model`, `ignore`, `history`. `getArgumentCompletions` for sub-commands. Pause after 3 failures, `/grammar on` resumes. | Each switch writes `~/.pi/agent/grammar.json` and survives `/reload`. |
-| 5 | History keep + `stats` + `history` commands, streak and fails rebuilt from the branch. | On a copy of the Claude build's history file, `/grammar stats 30d` prints the same numbers as the Claude build. `/tree` and resume keep the lines and the streak right. |
-| 6 | `review`, `ask` and its memory, as `grammar-report` entries. | One call each, same prompt builders, same output shape as the other builds. |
-| 7 | `widget` / `both` routes, RPC mode path, print/json no-ops. | `/grammar render widget` shows the newest check above the editor; `--mode rpc` shows text, never a broken component. |
-| 8 | Migration, once, when the Pi files are absent: copy `~/.claude/grammar-history.json` as is. Translate `grammar.json`: `display` → `render`, keep the shared keys, drop `statusline`, `auto`, `user_markdown`, `cowork`, `desktop`, `icons`. `endpoint*` cannot map: drop it and print the `models.json` snippet plus the `model` value to set. Keep `.bak`, print one line. | A machine with the Claude build installed starts with its history and settings after one run; an endpoint user sees the snippet. |
-| 9 | Docs and CI: README, PRIVACY, SECURITY, CHANGELOG, `tsc --noEmit`, tests in Actions. | `pi install git:…` then a fresh `pi` session works from the README alone. |
+| 1 | Placement spike, one file, no real call. Append `grammar-check` from four places: at `input`, at user `message_end`, 2 s after `input`, and through the [Anchor](#anchor) rule. Run each for an idle prompt and for a prompt queued while the agent streams. Also run `/tree`, `/new`, and `/reload` while a 5 s fake check is pending. | Confirms in a live `pi` session: (a) the first two land above the prompt, (b) the 2 s one lands above a queued prompt, (c) the anchor rule lands under the prompt in both cases, (d) a branch switch skips the entry and `/new` or `/reload` aborts without a stale-runtime throw, (e) after a restart every line comes back in the same place. |
+| 2 | `model.ts`: `off` / `auto` / explicit id, cheapest-of-provider pick, `hasConfiguredAuth` check on explicit ids, `reasoning` omitted, `stopReason` handling, cost estimate. | A fresh session with no config file checks prompts against a small model of the active provider. `/grammar help` names the model and the cost. |
+| 3 | `index.ts` gate (skip `e.source === "extension"`) + call + `render.ts` entry route. | Ten typed prompts show correct lines under them in a live TUI session. Short prompts, `/commands`, and `skip`/`ignore` all pass through unchecked. |
+| 4 | Commands: `help`, `on/off`, `natural`, `render`, `model`, `config`, `ignore`, `history`. `getArgumentCompletions` for sub-commands. Pause after 3 failures, `/grammar on` appends `grammar-state` reset sentinel and resumes. Verify `/reload` on installed `pi` 1.5.2 (`1.6.0-dev` `e03dca7a3` fixed a reload `session_start` edge case). | Each switch writes `~/.pi/agent/grammar.json` and survives `/reload` on `pi` 1.5.2. |
+| 5 | History keep + `stats` + `history` commands; rebuild streak, fails, `lastError`, and `recentFixes` from the branch; append `grammar-check` with `display: false` when `render` is `widget` or `off`. | On a copy of the Claude build's history file, `/grammar stats 30d` prints the same numbers as the Claude build. `/tree` and resume keep the lines and the streak right. |
+| 6 | `review` and `ask` (on `ctx.model` when `model` is `auto`, else explicit model), ask memory + `grammar-ask-turn` clear tombstone, as `grammar-report` entries. | One call each, same prompt builders, same output shape as the other builds. |
+| 7 | `widget` / `both` routes, `/grammar hide`, `ctrl+alt+g` shortcut, RPC mode path (string-array `setWidget` + `notify` for reports), print/json no-ops. | `/grammar render widget` shows the newest check above the editor; `--mode rpc` shows text, never a broken component. |
+| 8 | Migration, once, when the Pi files are absent: from Claude Code (`$CLAUDE_CONFIG_DIR` or `~/.claude`), copy `grammar-history.json` as is and copy `ignore`, `skip`, `history` from `grammar.json`; from Antigravity (`~/.gemini/config/grammar.json`, if present and Pi's `grammar.json` is absent), translate `display` → `render`, keep shared keys, drop `statusline`, `auto`, `user_markdown`, and if `endpoint*` was set drop it and print a `models.json` snippet plus the `model` value to set. Keep `.bak`, print one line (skipped in print/json modes). | A machine with the Claude or Antigravity build installed starts with its history, lists, and settings after one run; an endpoint user sees the snippet. |
+| 9 | Docs, sync script, and CI: README, PRIVACY, SECURITY, CHANGELOG, `tools/sync-from-agy.sh`, `tsc --noEmit`, tests in Actions. | `pi install git:…` then a fresh `pi` session works from the README alone. |
 | 10 | Optional: `tools/import-pi.ts` over `~/.pi/agent/sessions/**/*.jsonl` (`docs/session-format.md`). Simpler than the Claude importer: prompts are structured entries. | A month of past Pi prompts fills the history, with `--dry-run` first. |
 
 MVP: steps 0–5, about 2 days. Full parity with the other builds: 4 days.
@@ -268,7 +307,7 @@ Runner: vitest (what the Pi repo uses, `packages/*/test`). No `claude plugin tes
 - New: `linesOf()` as plain text with ANSI stripped, for wording and width cut.
 - New: `tests/extension.test.ts` against a hand-written fake `ExtensionAPI` and `ctx` (~120 lines). It
   records `on`, `appendEntry`, `registerCommand`, `setWidget`, `notify`, and feeds back a fake branch.
-  This is where the placement rule (idle prompt, queued prompt, branch and session switch mid-check), the gate, the pause-after-3-failures rule, and the mode guards are
+  This is where the placement rule (idle prompt, queued prompt, branch switch and `session_shutdown` mid-check), the gate, the pause-after-3-failures rule, and the mode guards are
   tested without a terminal.
 - Manual check per release, in a real `pi` TUI: prompt → line under it → `/grammar render widget` →
   restart the session and check the lines come back.
@@ -307,19 +346,16 @@ which is Pi's own file. PRIVACY.md lists the Pi APIs used, as the Claude README 
 
 | Risk | Effect | Handling |
 |---|---|---|
-| A slow check lands after the first assistant message | The line reads as part of the reply | Cap the check timeout well under first-token time; `/grammar help` says which model is in use; `render: "widget"` always shows the newest check in one place. |
+| A slow check lands after the first assistant message | The line reads as part of the reply | Cap the check timeout under typical first assistant `message_end` time (checks beat placement as long as they finish before the first assistant turn completes); `/grammar help` says which model is in use; `render: "widget"` always shows the newest check in one place. |
 | A local model answers in free prose | Checks fail | `check.ts` keeps `parseReply` recovery and `keepFixes`; README recommends models that follow the JSON shape. |
 | `model: "auto"` picks an expensive or reasoning model | A session costs cents, not pennies | Cheapest-of-provider sort, `reasoning` omitted, cost line in help, `"off"` as an escape. |
 | Pi's extension API moves | Breakage | Pin tested versions in README; a weekly CI job installs the latest `pi` and runs the fake-API tests. |
 | Two entry routes | Extra code | One `linesOf`, thin adapters. |
 | Two repos drift | Prompt tuning lands in one build only | Provenance headers and `tools/sync-from-agy.sh`, run after each upstream release. |
 
-## Open questions
+## Decisions
 
-1. Should `render: "both"` show the widget only when the entry did not land directly under the prompt (the
-   check lost the race with the first assistant message, or the entry was skipped after a branch switch)?
-   The anchor rule already rules out "above the prompt". Needs step 1 numbers on how often the rest happens.
-2. Should `/grammar model auto` ever prompt once on first run (host model / pick one / off)? The default
-   here is: no prompt, pick the cheap one, and say so in help.
-3. Should ask memory cross sessions? Kept per session for now, matching the other builds.
-</content>
+1. `render: "both"` always shows both entry and widget (predictable over fallback-only).
+2. `model: "auto"` picks the cheapest provider model silently on first run and reports model + cost in
+   `/grammar help`.
+3. Ask memory stays per session via `grammar-ask-turn` branch entries, matching the other builds.
