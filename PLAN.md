@@ -7,7 +7,7 @@ Reads against:
 
 | Source | Path | Used for |
 |---|---|---|
-| Pi source, v1.6.0-dev (`51ba3ab5b`) | `../pi` | Every Pi API fact below. Line numbers are from this checkout. |
+| Pi source, v1.6.0 (`25190b72c`) | `../pi` | Every Pi API fact below. Line numbers are from this checkout. |
 | Pi docs | `../pi/packages/coding-agent/docs/` | extensions.md, session-format.md, models.md |
 | Installed runtime | `pi` 1.6.0 (`mise`) | The version to test against first |
 | Upstream mod | `../prompt-grammar-for-claude` | Feature behaviour, the check prompt, history format |
@@ -70,8 +70,8 @@ prompt by default.
 
 **Where an entry lands.** `pi.appendEntry` writes a `custom` entry with `parentId = leafId`
 of the session that is current at call time (`core/session-manager.ts:1307-1319`) and emits `entry_appended`; interactive mode renders it through
-`addCustomEntryToChat` (`modes/interactive/interactive-mode.ts:3629-3635`). That method **inserts the
-component before the streaming component** when the agent is mid-run (`:4046-4062`). So an appended entry
+`addCustomEntryToChat` (`modes/interactive/interactive-mode.ts:3635-3638`). That method **inserts the
+component before the streaming component** when the agent is mid-run (`:4052-4071`). So an appended entry
 shows after the last persisted message, not at the end of the screen.
 
 **Extension `message_end` runs before the message is persisted.** `_emitExtensionEvent(event)` awaits every
@@ -79,7 +79,7 @@ extension's `message_end` handler before calling `sessionManager.appendMessage`
 (`core/agent-session.ts:1212-1237`). An entry appended in a user `message_end` handler becomes the
 prompt's parent — it renders **above** the prompt — and an async handler in another extension can delay
 `appendMessage` past a blind `setTimeout(0)`. Also, because `addCustomEntryToChat` splices before
-`this.streamingComponent` (`interactive-mode.ts:4057-4063`) and the assistant message is persisted only at
+`this.streamingComponent` (`interactive-mode.ts:4063-4068`) and the assistant message is persisted only at
 assistant `message_end`, a check only needs to beat the first assistant `message_end`, not first token, to
 render directly under the prompt.
 
@@ -87,15 +87,18 @@ render directly under the prompt.
 `AgentSession`, emit `session_shutdown`, and call `runtime.invalidate()`
 (`core/agent-session-runtime.ts:186-243`, `core/extensions/loader.ts:200-207`). There is no `session_switch`
 event; `session_start` fires with `reason: "startup" | "reload" | "new" | "resume" | "fork"`. Calling
-`pi.appendEntry()` on a stale runtime throws via `assertActive()` (`loader.ts:405-408`).
+`pi.appendEntry()` on a stale runtime throws via `assertActive()` (`loader.ts:405-408`). `teardownCurrent`
+awaits the `session_shutdown` handlers before it disposes the session (`agent-session-runtime.ts:186-196`), so
+a handler can wait for in-flight work.
 
 **Entries are cheap and invisible to the model.** A `custom` entry never enters LLM context
-(`docs/session-format.md`, CustomEntry). With no renderer for its `customType`, it renders nothing
-(`interactive-mode.ts:4047-4050`). Sidecar data costs one JSONL line.
+(`docs/session-format.md`, CustomEntry). With no renderer for its `customType`, or when the renderer returns
+`undefined`, it renders nothing, not even a blank line (`interactive-mode.ts:4053-4061`). Sidecar data costs one JSONL line.
 
 **Entry renderers are called once, then cached.** `CustomEntryComponent` builds the child in its
 constructor and rebuilds only on `invalidate()`, `setExpanded`, `setOutputPad`
-(`modes/interactive/components/custom-entry.ts:19-69`). `invalidate()` runs on theme and width changes.
+(`modes/interactive/components/custom-entry.ts:19-69`). `invalidate()` runs on theme and width changes. It
+adds a `Spacer(1)` above the renderer's component, and only when the renderer returned one (`:63-68`).
 
 **But the tree is re-rendered every frame.** `Container.render` calls `renderChildLines(children, width, …)`,
 which calls `child.render(width)` on every child each frame (`packages/tui/src/tui.ts:393-413, 447-468`),
@@ -104,7 +107,7 @@ its lines inside `render()` therefore updates live.
 
 **Nothing in `ExtensionUIContext` asks for a frame directly** (`core/extensions/types.ts:164ff`).
 `setStatus`, `setWidget` and `notify` all end in `ui.requestRender()`
-(`interactive-mode.ts:2500-2503, 2598-2638, 3123-3130 → 4022-4041`). A string-array widget is capped at 10 lines
+(`interactive-mode.ts:2500-2503, 2598-2638, 3129-3136 → 4030-4050`). A string-array widget is capped at 10 lines
 (`MAX_WIDGET_LINES`, `:2686`); a component factory is not.
 
 **Markdown transformers are not live.** They run when a row is built: new message, restored session,
@@ -114,7 +117,9 @@ restored rows. A live user row is not re-transformed when extension state change
 **Models.** `ctx.modelRegistry` is a `ModelRegistry` class with `getAvailable()`, `find(provider, id)`,
 `hasConfiguredAuth(model)`, `streamSimple(model, context, opts)`, `complete(...)`,
 `getApiKeyAndHeaders(model)`, `getProviderAuth(provider)` (`core/model-registry.ts:48-196`). `find()` does
-not check credentials (`hasConfiguredAuth(model)` does, `:72-87`). `completeSimple` exists on the runtime,
+not check credentials (`hasConfiguredAuth(model)` does, `:72-87`). `hasConfiguredAuth` only reads a cached
+snapshot of configured providers (`core/model-runtime.ts:552-554`); Pi itself falls back to an async auth
+check when it is false (`agent-session.ts:2262-2264`), so a false result alone does not mean "no auth". `completeSimple` exists on the runtime,
 not on the registry, so the port calls `streamSimple` and collects the result; `streamSimple(…).result()`
 resolves (rather than rejects) with `stopReason: "error" | "aborted"` on provider errors or aborts. `Model`
 carries `cost`, `contextWindow`, `input`, `reasoning`. OpenAI-compatible servers (Ollama, llama.cpp, LM
@@ -152,10 +157,10 @@ Studio, OpenRouter) are configured in `~/.pi/agent/models.json`
    and it survives `/reload`, restart, and branch navigation with no reconstruction.
 3. **`✓` before the prompt through a markdown transformer.** Not live, so a clean prompt would show nothing
    until a resize. Decision: the clean note stays in the entry line —
-   `✓ no mistakes · N in a row` — rendered only from `N ≥ 3` (matching agy's transcript rule). Because
-   `CustomEntryComponent` always prepends a `Spacer(1)`, clean prompts still append `grammar-check` (so branch
-   rebuild preserves `streak`), but with `display: false` for streaks 1–2 or when `clean` is false. The
-   transformer is not used.
+   `✓ no mistakes · N in a row` — rendered only from `N ≥ 3` (matching agy's `STREAK_FROM`). Clean prompts
+   still append `grammar-check` (so branch rebuild preserves `streak`), but with `display: false` for streaks
+   1–2 or when `clean` is false; the renderer returns `undefined` for those, so `CustomEntryComponent` adds no
+   component and no `Spacer(1)`. The transformer is not used.
 4. **A bespoke OpenAI client.** Dropped. Pi already speaks OpenAI-compatible endpoints through
    `models.json`. The port reads a model from the registry instead of fetching, which removes the client,
    the three `endpoint_*` settings, and the per-server quirks retry.
@@ -175,8 +180,10 @@ Studio, OpenRouter) are configured in `~/.pi/agent/models.json`
   Ollama/llama.cpp servers don't swap models out of VRAM).
 - `"<provider>/<modelId>"`: split on the **first** `/` only (`indexOf("/")`), because providers such as
   OpenRouter, Groq, and Fireworks include `/` inside `modelId` (e.g., `openrouter/moonshotai/kimi-k2.7-code`);
-  call `ctx.modelRegistry.find()`, then check `ctx.modelRegistry.hasConfiguredAuth(model)`; warn in
-  `/grammar model` and `/grammar help` when auth is missing instead of failing 3 checks. `/grammar model`
+  call `ctx.modelRegistry.find()`, then check `ctx.modelRegistry.hasConfiguredAuth(model)`, and when that is
+  false, `await ctx.modelRegistry.getProviderAuth(model.provider)` (the snapshot can miss auth that resolves
+  at request time); warn in `/grammar model` and `/grammar help` only when both find no auth, instead of
+  failing 3 checks. `/grammar model`
   lists what the registry offers.
 - `"off"`: no checks, no calls.
 - Coaching commands (`/grammar review`, `/grammar ask`): use `ctx.model` when `model` is `"auto"` (falling
@@ -206,8 +213,13 @@ One pending record per checked prompt, matched by prompt text (FIFO only among i
 3. When both the result and `promptEntryId` are present: if `!disposed` and `promptEntryId` is on
    `getBranch()`, `appendEntry("grammar-check", …)`. Otherwise skip the entry; the history record is still
    kept.
-4. `session_shutdown`: set `disposed = true`, abort all in-flight `AbortController`s, and clear pending
-   timers/records so a stale runtime never calls `appendEntry` or `ctx.ui.*`.
+4. `session_shutdown`: set `disposed = true` and clear pending records and timers, so a stale runtime never
+   calls `appendEntry` or `ctx.ui.*`. Do **not** abort in-flight checks: let each one finish (its own timeout
+   still bounds it) and write its history record, which is a plain file write that needs no live runtime.
+   Aborting would lose the last prompt's fixes on every `/new`, `/resume`, `/fork`, and `/reload`. In print
+   and json modes the run often ends before the check returns, so the handler awaits pending checks, capped
+   at 2 s, before the process disposes the runtime; after the cap it aborts them. In TUI on `reason: "quit"`,
+   the same 2 s cap applies so quitting never hangs on a slow model.
 5. A prompt that never persists (input handled by another extension, run aborted before the save) drops its
    pending record at `agent_end` or after the timeout, whichever comes later.
 
@@ -219,7 +231,10 @@ assistant `message_end`; otherwise it comes after the last persisted message at 
 `render` setting: `"entry"` (default) | `"widget"` | `"both"` | `"off"`.
 
 - In TUI and RPC modes, every checked prompt appends a `custom` entry (`customType: "grammar-check"`)
-  carrying the full result plus `display: boolean` — true when `(render === "entry" || render === "both")` and
+  carrying the full result plus `display: boolean`. This includes a check the model answered but that is
+  skipped (null reply, unsupported language): agy resets `fails` on those (`src/runner.ts:108-113`), so they
+  append with `display: false` and `status: "skipped"`, or branch rebuild would keep a stale `fails` count.
+  `display` is true when `(render === "entry" || render === "both")` and
   either the check is non-clean (fixes, natural rewrite, or error) or `settings.clean && streak >= 3`. The TUI
   renderer draws struck-through source in `error`, the fix in `success`, the reason in `muted`, and the
   native-speaker line below when `display` is true, and returns `undefined` when false (cleanly skipped by
@@ -231,7 +246,8 @@ assistant `message_end`; otherwise it comes after the last persisted message at 
   `linesOf(..., { styled: ctx.mode === "tui" })` so RPC widgets send plain text without ANSI escape sequences,
   and report commands also surface plain text via `ctx.ui.notify`.
 - In print and json modes: no entry, no widget, no notify, no migration banner. History recording still runs
-  for prompts; interactive `/grammar` commands are TUI/RPC-only.
+  for prompts, because `session_shutdown` waits up to 2 s for pending checks (see [Anchor](#anchor) step 4);
+  interactive `/grammar` commands are TUI/RPC-only.
 
 `/grammar hide` clears the widget; `pi.registerShortcut("ctrl+alt+g", …)` does the same.
 
@@ -240,8 +256,11 @@ assistant `message_end`; otherwise it comes after the last persisted message at 
 Follows the pattern in `docs/extensions.md` (State Management): rebuild from `ctx.sessionManager.getBranch()`
 at `session_start` (covering `startup`, `reload`, `new`, `resume`, `fork`) and `session_tree`.
 
-- Each check appends `grammar-check`, so branch rebuild restores `streak`, `fails`, `lastError`, and
-  `recentFixes` (last 20 fixes, used by `/grammar ask`) without in-memory drift.
+- Each check appends `grammar-check` (skipped ones too, with `status: "skipped"`), so branch rebuild restores
+  `streak`, `fails`, `lastError`, and `recentFixes` (last 20 fixes, used by `/grammar ask`) without in-memory
+  drift. Replay rules follow agy `src/runner.ts`: done → `fails = 0`, `lastError` cleared, streak +1 when clean
+  else 0; skipped → `fails = 0`, `lastError` cleared, streak unchanged; error → `fails + 1`, `lastError` set,
+  streak unchanged.
 - Append-only reset sentinels keep cleared state from returning on `/reload` or `/tree`: `/grammar on`
   appends an invisible `grammar-state` entry (`{ failsReset: true }`) so 3 earlier errors no longer re-pause;
   `/grammar ask clear` and `/grammar ask memory off` append a tombstone (`grammar-ask-turn`,
