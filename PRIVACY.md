@@ -7,8 +7,8 @@
 - Each typed prompt (its first `max_chars` characters, default `6000`) is sent only to your configured Pi check model (`ctx.model` or the model selected by `model`), through Pi's `ctx.modelRegistry.streamSimple(...)`.
 - Prompts with `source === "extension"`, slash commands, prompts shorter than `min_words`, prompts without enough letters, and prompts matching your `skip` list are never sent.
 - When `model` is `"off"` or `enabled` is `false`, no prompts are checked or sent.
-- `/grammar review` sends grouped mistake pairs (never raw prompts) to your coaching model.
-- `/grammar ask` sends your question, grouped mistake pairs, up to 10 recent session fixes, and (while `ask_memory` is on) up to 5 earlier ask/review exchanges.
+- `/grammar review` sends grouped mistake pairs (never raw prompts) to your coaching model (`model_reviewer`, `ctx.model`, or `model`).
+- `/grammar ask` sends your question, grouped mistake pairs, up to 10 recent session fixes, and (while `ask_memory` is on) up to 5 earlier ask/review exchanges to your coaching model (`model_reviewer`, `ctx.model`, or `model`).
 - `tools/import-pi.ts`, only when run manually without `--dry-run`, batches past user prompts from `~/.pi/agent/sessions/**/*.jsonl` through Pi's `ModelRegistry` (`createAgentSessionServices`).
 
 ## What it keeps on disk

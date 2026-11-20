@@ -34,6 +34,8 @@ export type Settings = {
   render: RenderMode
   /** Model spec: 'auto' (default), 'off', or '<provider>/<modelId>'. */
   model: string
+  /** Optional override model for `/grammar review` and `/grammar ask`: `'auto'` (active session model), `'<provider>/<modelId>'`, or `undefined` (inherit `model`). */
+  modelReviewer: string | undefined
   /** Optional text appended to the system prompt on model calls (e.g. '<|think_off|>'). */
   systemPromptAppend: string
   /** Optional override appended to the system prompt on `/grammar review` and `/grammar ask` (inherits `systemPromptAppend` when `undefined`; `""` appends nothing). */
@@ -117,6 +119,14 @@ const modelOf = (value: unknown): string => {
   return lower === AUTO || lower === 'off' ? lower : raw
 }
 
+const reviewerModelOf = (value: unknown): string | undefined => {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (raw === '') {
+    return undefined
+  }
+  return raw.toLowerCase() === AUTO ? AUTO : raw
+}
+
 /** Build typed Settings from a raw JSON config object, falling back to defaults. */
 export const settingsFrom = (o: Record<string, unknown> = {}): Settings => ({
   enabled: o.enabled !== false,
@@ -131,6 +141,7 @@ export const settingsFrom = (o: Record<string, unknown> = {}): Settings => ({
   askMemory: o.ask_memory !== false,
   render: normalizeRender(o.render) ?? 'entry',
   model: modelOf(o.model),
+  modelReviewer: reviewerModelOf(o.model_reviewer),
   systemPromptAppend: typeof o.system_prompt_append === 'string' ? o.system_prompt_append.trim() : '',
   systemPromptAppendReviewer:
     typeof o.system_prompt_append_reviewer === 'string' ? o.system_prompt_append_reviewer.trim() : undefined,
@@ -300,9 +311,9 @@ export const loadConfigAndLists = (
     }
   }
 
-  // Project settings can override global settings except `model`, `system_prompt_append`, and `system_prompt_append_reviewer` for safety.
+  // Project settings can override global settings except `model`, `model_reviewer`, `system_prompt_append`, and `system_prompt_append_reviewer` for safety.
   const mergedRaw: Record<string, unknown> = { ...g.raw, ...projectRaw }
-  for (const key of ['model', 'system_prompt_append', 'system_prompt_append_reviewer'] as const) {
+  for (const key of ['model', 'model_reviewer', 'system_prompt_append', 'system_prompt_append_reviewer'] as const) {
     if (g.raw[key] !== undefined) {
       mergedRaw[key] = g.raw[key]
     } else {
@@ -349,6 +360,7 @@ export const CONFIG_KEYS = [
   'ask_memory',
   'render',
   'model',
+  'model_reviewer',
   'system_prompt_append',
   'system_prompt_append_reviewer',
   'timeout_ms',

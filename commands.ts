@@ -111,17 +111,14 @@ const forLanguage = (h: History, words: string, s: Settings) => {
   return { ...pickLanguage(h, lang, s.language), rest }
 }
 
-const validateModelSetting = <M extends ModelLike>(
+const validateExplicitModel = <M extends ModelLike>(
   rawVal: string,
   registry: ModelRegistryLike<M>,
-): { ok: true; value: string; model?: M } | { ok: false; error: string } => {
-  const lower = rawVal.trim().toLowerCase()
-  if (lower === 'auto' || lower === 'off') {
-    return { ok: true, value: lower }
-  }
+  invalidFormatError: string,
+): { ok: true; value: string; model: M } | { ok: false; error: string } => {
   const parsed = parseExplicitModelId(rawVal)
   if (!parsed) {
-    return { ok: false, error: `model expects auto, off, or <provider>/<modelId>.` }
+    return { ok: false, error: invalidFormatError }
   }
   const found = registry.find(parsed.provider, parsed.modelId)
   if (!found) {
@@ -130,11 +127,37 @@ const validateModelSetting = <M extends ModelLike>(
   return { ok: true, value: `${found.provider}/${found.id}`, model: found }
 }
 
+const validateModelSetting = <M extends ModelLike>(
+  rawVal: string,
+  registry: ModelRegistryLike<M>,
+): { ok: true; value: string; model?: M } | { ok: false; error: string } => {
+  const lower = rawVal.trim().toLowerCase()
+  if (lower === 'auto' || lower === 'off') {
+    return { ok: true, value: lower }
+  }
+  return validateExplicitModel(rawVal, registry, 'model expects auto, off, or <provider>/<modelId>.')
+}
+
+const validateReviewerModelSetting = <M extends ModelLike>(
+  rawVal: string,
+  registry: ModelRegistryLike<M>,
+): { ok: true; value: string; model?: M } | { ok: false; error: string } => {
+  const lower = rawVal.trim().toLowerCase()
+  if (lower === 'auto') {
+    return { ok: true, value: 'auto' }
+  }
+  const usageError = 'model_reviewer expects auto or <provider>/<modelId> (use unset to inherit model).'
+  if (lower === 'off') {
+    return { ok: false, error: usageError }
+  }
+  return validateExplicitModel(rawVal, registry, usageError)
+}
+
 const parseConfigValue = <M extends ModelLike>(
   key: string,
   rawVal: string,
   registry: ModelRegistryLike<M>,
-): { ok: true; value: unknown } | { ok: false; error: string } => {
+): { ok: true; value: unknown; model?: M } | { ok: false; error: string } => {
   const v = rawVal.trim()
   if (v === 'reset' || v === 'default' || v === 'unset') {
     return { ok: true, value: undefined }
@@ -179,6 +202,8 @@ const parseConfigValue = <M extends ModelLike>(
     }
     case 'model':
       return validateModelSetting(v, registry)
+    case 'model_reviewer':
+      return validateReviewerModelSetting(v, registry)
     case 'system_prompt_append':
     case 'system_prompt_append_reviewer':
       return { ok: true, value: v === '""' || v === "''" ? '' : v }
@@ -257,11 +282,24 @@ export const getGrammarCompletions = (argumentPrefix: string, availableModels: r
       }
       return parts.length <= 2 ? toItems(['list', 'clear', 'memory', '7d', '30d', 'since '], arg1) : null
     case 'config':
+      if (parts.length === 3 || (parts.length === 2 && hasTrailingSpace)) {
+        const key = arg1.toLowerCase()
+        if (key === 'model') {
+          return toItems(['auto', 'off', 'unset', ...availableModels], arg2)
+        }
+        if (key === 'model_reviewer') {
+          return toItems(['auto', 'unset', ...availableModels], arg2)
+        }
+        return null
+      }
       return parts.length <= 2 ? toItems(CONFIG_KEYS, arg1) : null
     default:
       return null
   }
 }
+
+const isDistinctModel = <M extends ModelLike>(a: ResolvedModel<M>, b: ResolvedModel<M>): b is Extract<ResolvedModel<M>, { kind: 'ready' }> =>
+  b.kind === 'ready' && (a.kind !== 'ready' || a.model.provider !== b.model.provider || a.model.id !== b.model.id)
 
 /** Execute a `/grammar ...` command cleanly against Pi settings, history, branch state, and ModelRegistry. */
 export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
@@ -276,7 +314,12 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
   const { settings: s, lists, projectAllowsHistory } = loadConfigAndLists(paths)
   const reviewerAppend = s.systemPromptAppendReviewer ?? s.systemPromptAppend
   const checkResolved = resolveCheckModel(s.model, { activeModel, registry, scopedModels })
-  const coachResolved = resolveCoachingModel(s.model, { activeModel, registry, scopedModels })
+  const coachResolved = resolveCoachingModel(s.model, {
+    activeModel,
+    registry,
+    scopedModels,
+    reviewerModel: s.modelReviewer,
+  })
   const coachName = coachResolved.kind === 'ready' ? coachResolved.spec : 'the session model'
 
   const trimmed = args.trim()
@@ -310,6 +353,14 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
           authWarning = ` Auth warning: ${auth.warning}.`
         }
       }
+      let coachAuthWarning = ''
+      const showReviewerLine = s.modelReviewer !== undefined || coachResolved.kind === 'missing'
+      if (showReviewerLine && isDistinctModel(checkResolved, coachResolved)) {
+        const auth = await checkModelAuth(registry, coachResolved.model)
+        if (!auth.ok) {
+          coachAuthWarning = ` Auth warning: ${auth.warning}.`
+        }
+      }
       const check = !s.enabled
         ? 'off'
         : s.model === 'off'
@@ -327,6 +378,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
         `Check: ${check}. Natural line: ${s.natural ? 'on' : 'off'}. Render: ${s.render}.`,
         `Language: ${s.language === AUTO ? 'auto (each prompt in its own language)' : languagesOf(s.language).length > 1 ? `${s.language} (each prompt in one of them)` : s.language}.`,
         `Model: ${describeModel(checkResolved)}, spelling ${s.dialect}, at least ${s.minWords} words, up to ${s.maxChars} chars.${authWarning}`,
+        ...(showReviewerLine ? [`Reviewer model: ${describeModel(coachResolved)}.${coachAuthWarning}`] : []),
         `History: ${s.history ? 'on' : 'off'}, ${n} fixes kept${n >= REVIEW_FROM ? '' : ` (/grammar review from ${REVIEW_FROM})`}.`,
         s.askMemory
           ? `Ask memory: on, ${plural(session.thread.length, 'exchange')} remembered (/grammar ask list).`
@@ -422,12 +474,19 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
             authLine = `\nWarning: ${auth.warning}`
           }
         }
+        if (isDistinctModel(checkResolved, coachResolved)) {
+          const coachAuth = await checkModelAuth(registry, coachResolved.model)
+          if (!coachAuth.ok) {
+            authLine += `\nWarning (reviewer): ${coachAuth.warning}`
+          }
+        }
         const rows = available
           .slice(0, 25)
           .map(m => `  ${m.provider}/${m.id}  (${estimateCost(m).text}${m.reasoning ? ', reasoning' : ''})`)
         const more = available.length > 25 ? [`  ... (${available.length - 25} more available)`] : []
         const body = [
           `Setting: ${s.model}`,
+          `Reviewer setting: ${s.modelReviewer ?? '(inherit model)'}`,
           `Check model: ${describeModel(checkResolved)}`,
           `Coaching model (/grammar review, /grammar ask): ${describeModel(coachResolved)}${authLine}`,
           '',
@@ -436,6 +495,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
           ...more,
           '',
           'Set with: /grammar model auto | off | <provider>/<modelId>',
+          'Set reviewer with: /grammar config model_reviewer auto | <provider>/<modelId> | unset',
         ].join('\n')
         return report('model', body)
       }
@@ -720,6 +780,7 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
             `ask_memory: ${s.askMemory}`,
             `render: ${s.render}`,
             `model: ${s.model}`,
+            `model_reviewer: ${s.modelReviewer ?? '(inherit model)'}`,
             `system_prompt_append: ${s.systemPromptAppend || '(none)'}`,
             `system_prompt_append_reviewer: ${s.systemPromptAppendReviewer === undefined ? '(inherit system_prompt_append)' : s.systemPromptAppendReviewer || '(none)'}`,
             `timeout_ms: ${s.timeoutMs}`,
@@ -737,6 +798,13 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
       if (!parsed.ok) {
         return { kind: 'notify', level: 'warning', message: parsed.error }
       }
+      let warning = ''
+      if (parsed.model) {
+        const auth = await checkModelAuth(registry, parsed.model)
+        if (!auth.ok) {
+          warning = ` Warning: ${auth.warning}.`
+        }
+      }
       const res = writeGlobalField(paths.globalConfig, key, parsed.value)
       if (!res.ok) {
         return { kind: 'notify', level: 'error', message: res.error }
@@ -744,9 +812,10 @@ export const runGrammarCommand = async <M extends ModelLike = Model<any>>({
       const shown = parsed.value === undefined ? '(default)' : parsed.value === '' ? '""' : String(parsed.value)
       return {
         kind: 'notify',
+        level: warning ? 'warning' : 'info',
         clearWidget: key === 'render' && (parsed.value === 'entry' || parsed.value === 'off'),
         refreshModel: key === 'model',
-        message: `Updated ${key} = ${shown} in ${paths.globalConfig}.`,
+        message: `Updated ${key} = ${shown} in ${paths.globalConfig}.${warning}`,
       }
     }
 

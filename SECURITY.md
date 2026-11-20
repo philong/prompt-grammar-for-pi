@@ -5,7 +5,7 @@
 ## Trust boundaries
 
 - **Untrusted repositories:** Project-local `.pi/grammar.json` is read only when `ctx.isProjectTrusted()` returns `true`.
-- **Model & system-prompt override guard:** Even in trusted projects, `.pi/grammar.json` cannot override the global `model`, `system_prompt_append`, or `system_prompt_append_reviewer` settings, preventing a repository from redirecting prompt checks or injecting system-prompt instructions.
+- **Model & system-prompt override guard:** Even in trusted projects, `.pi/grammar.json` cannot override the global `model`, `model_reviewer`, `system_prompt_append`, or `system_prompt_append_reviewer` settings, preventing a repository from redirecting prompt checks or injecting system-prompt instructions.
 - **File permissions & credentials:** `~/.pi/agent/grammar.json` is written atomically with `0600` permissions on POSIX. The extension never stores endpoint API keys — provider credentials stay in Pi's `~/.pi/agent/auth.json` or `~/.pi/agent/models.json`.
 - **Terminal sanitization:** Model-supplied strings (`from`, `to`, `why`, `natural`, `error`) are stripped of ANSI escape sequences and control characters before rendering.
 

@@ -144,22 +144,57 @@ export const resolveCheckModel = <M extends ModelLike>(
   }
 }
 
-/** Resolve the model used for `/grammar review` and `/grammar ask` (uses `ctx.model` when `auto`/`off`, else explicit). */
-export const resolveCoachingModel = <M extends ModelLike>(
-  modelSetting: string,
+const resolveSessionModel = <M extends ModelLike>(
   params: { activeModel: M | undefined; registry: ModelRegistryLike<M>; scopedModels?: readonly ScopedModelLike<M>[] },
 ): ResolvedModel<M> => {
-  const lower = modelSetting.trim().toLowerCase()
-  if (lower === '' || lower === 'auto' || lower === 'off') {
-    if (params.activeModel) {
+  if (params.activeModel) {
+    return {
+      kind: 'ready',
+      model: params.activeModel,
+      source: 'session',
+      spec: `${params.activeModel.provider}/${params.activeModel.id}`,
+    }
+  }
+  return resolveCheckModel('auto', params)
+}
+
+/** Resolve the model used for `/grammar review` and `/grammar ask` (uses `reviewerModel` when set, else `ctx.model` when `auto`/`off` or explicit `model`). */
+export const resolveCoachingModel = <M extends ModelLike>(
+  modelSetting: string,
+  params: {
+    activeModel: M | undefined
+    registry: ModelRegistryLike<M>
+    scopedModels?: readonly ScopedModelLike<M>[]
+    reviewerModel?: string
+  },
+): ResolvedModel<M> => {
+  const reviewerSpec = params.reviewerModel?.trim() ?? ''
+  if (reviewerSpec !== '') {
+    if (reviewerSpec.toLowerCase() === 'auto') {
+      return resolveSessionModel(params)
+    }
+    const parsed = parseExplicitModelId(reviewerSpec)
+    if (!parsed) {
       return {
-        kind: 'ready',
-        model: params.activeModel,
-        source: 'session',
-        spec: `${params.activeModel.provider}/${params.activeModel.id}`,
+        kind: 'missing',
+        spec: reviewerSpec,
+        error: `invalid reviewer model "${reviewerSpec}" (expected provider/modelId or auto)`,
       }
     }
-    return resolveCheckModel('auto', params)
+    const found = params.registry.find(parsed.provider, parsed.modelId)
+    if (!found) {
+      return { kind: 'missing', spec: reviewerSpec, error: `model "${reviewerSpec}" not found in registry` }
+    }
+    return {
+      kind: 'ready',
+      model: found,
+      source: 'explicit',
+      spec: `${found.provider}/${found.id}`,
+    }
+  }
+  const lower = modelSetting.trim().toLowerCase()
+  if (lower === '' || lower === 'auto' || lower === 'off') {
+    return resolveSessionModel(params)
   }
   return resolveCheckModel(modelSetting, params)
 }

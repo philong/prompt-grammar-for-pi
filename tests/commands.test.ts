@@ -434,4 +434,221 @@ describe('commands', () => {
       env.cleanup()
     }
   })
+
+  test('model_reviewer overrides coaching model without changing check model, warns on missing auth, and supports completions', async () => {
+    const env = setup()
+    try {
+      let h = EMPTY_HISTORY
+      for (let i = 0; i < 20; i++) {
+        h = record(h, [{ from: 'depend from', to: 'depend on', why: 'preposition', kind: 'preposition' }], NOW - i * 1000)
+      }
+      writeFileSync(env.paths.historyFile, historyText(h), 'utf8')
+
+      const cfgDefault = await runGrammarCommand({
+        args: 'config',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(cfgDefault.kind).toBe('report')
+      if (cfgDefault.kind === 'report') {
+        expect(cfgDefault.report.body).toContain('model_reviewer: (inherit model)')
+      }
+
+      await runGrammarCommand({
+        args: 'model anthropic/claude-haiku-4-5',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+
+      const setExplicitReviewer = await runGrammarCommand({
+        args: 'config model_reviewer openrouter/moonshotai/kimi-k2.7-code',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(setExplicitReviewer).toMatchObject({
+        kind: 'notify',
+        level: 'info',
+        message: expect.stringContaining('model_reviewer = openrouter/moonshotai/kimi-k2.7-code'),
+      })
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).model).toBe('anthropic/claude-haiku-4-5')
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).model_reviewer).toBe(
+        'openrouter/moonshotai/kimi-k2.7-code',
+      )
+
+      const cfgSet = await runGrammarCommand({
+        args: 'config',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(cfgSet.kind).toBe('report')
+      if (cfgSet.kind === 'report') {
+        expect(cfgSet.report.body).toContain('model_reviewer: openrouter/moonshotai/kimi-k2.7-code')
+      }
+
+      const helpExplicit = await runGrammarCommand({
+        args: 'help',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(helpExplicit.kind).toBe('report')
+      if (helpExplicit.kind === 'report') {
+        expect(helpExplicit.report.body).toContain('Model: anthropic/claude-haiku-4-5')
+        expect(helpExplicit.report.body).toContain('Reviewer model: openrouter/moonshotai/kimi-k2.7-code')
+      }
+
+      await runGrammarCommand({
+        args: 'review 30d',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      await runGrammarCommand({
+        args: 'ask why prepositions?',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[0]?.model.id).toBe('moonshotai/kimi-k2.7-code')
+      expect(env.calls[1]?.model.id).toBe('moonshotai/kimi-k2.7-code')
+
+      // Setting model_reviewer to auto routes review/ask back to ctx.model (sonnet) while check model stays haiku.
+      await runGrammarCommand({
+        args: 'config model_reviewer auto',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      await runGrammarCommand({
+        args: 'review 30d',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      await runGrammarCommand({
+        args: 'ask why prepositions?',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+        now: NOW,
+      })
+      expect(env.calls[2]?.model.id).toBe('claude-sonnet-4-5')
+      expect(env.calls[3]?.model.id).toBe('claude-sonnet-4-5')
+
+      const badOff = await runGrammarCommand({
+        args: 'config model_reviewer off',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(badOff).toMatchObject({ kind: 'notify', level: 'warning' })
+
+      const badMissing = await runGrammarCommand({
+        args: 'config model_reviewer openai/missing',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(badMissing).toMatchObject({ kind: 'notify', level: 'warning' })
+
+      const unsetReviewer = await runGrammarCommand({
+        args: 'config model_reviewer unset',
+        paths: env.paths,
+        session: emptySession(),
+        activeModel: env.sonnet,
+        scopedModels: [],
+        registry: env.registry,
+      })
+      expect(unsetReviewer).toMatchObject({ kind: 'notify', level: 'info' })
+      expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).model_reviewer).toBeUndefined()
+
+      expect(getGrammarCompletions('config mod')?.map(c => c.value)).toEqual(['model', 'model_reviewer'])
+      expect(getGrammarCompletions('config model_reviewer ', ['anthropic/claude-sonnet-4-5'])?.map(c => c.value)).toEqual([
+        'auto',
+        'unset',
+        'anthropic/claude-sonnet-4-5',
+      ])
+    } finally {
+      env.cleanup()
+    }
+
+    // Missing auth warns on /grammar config model_reviewer ..., /grammar model, and /grammar help.
+    const noAuth = setup({ authOk: false })
+    try {
+      const setWarn = await runGrammarCommand({
+        args: 'config model_reviewer openrouter/moonshotai/kimi-k2.7-code',
+        paths: noAuth.paths,
+        session: emptySession(),
+        activeModel: noAuth.sonnet,
+        scopedModels: [],
+        registry: noAuth.registry,
+      })
+      expect(setWarn).toMatchObject({
+        kind: 'notify',
+        level: 'warning',
+        message: expect.stringContaining('Warning: no configured auth for provider "openrouter"'),
+      })
+
+      const modelList = await runGrammarCommand({
+        args: 'model',
+        paths: noAuth.paths,
+        session: emptySession(),
+        activeModel: noAuth.sonnet,
+        scopedModels: [],
+        registry: noAuth.registry,
+      })
+      expect(modelList.kind).toBe('report')
+      if (modelList.kind === 'report') {
+        expect(modelList.report.body).toContain('Reviewer setting: openrouter/moonshotai/kimi-k2.7-code')
+        expect(modelList.report.body).toContain('Warning (reviewer): no configured auth for provider "openrouter"')
+      }
+
+      const helpWarn = await runGrammarCommand({
+        args: 'help',
+        paths: noAuth.paths,
+        session: emptySession(),
+        activeModel: noAuth.sonnet,
+        scopedModels: [],
+        registry: noAuth.registry,
+      })
+      expect(helpWarn.kind).toBe('report')
+      if (helpWarn.kind === 'report') {
+        expect(helpWarn.report.body).toContain('Reviewer model: openrouter/moonshotai/kimi-k2.7-code')
+        expect(helpWarn.report.body).toContain('Auth warning: no configured auth for provider "openrouter"')
+      }
+    } finally {
+      noAuth.cleanup()
+    }
+  })
 })

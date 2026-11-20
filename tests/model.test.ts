@@ -123,6 +123,52 @@ describe('model', () => {
       expect(autoCoach.source).toBe('session')
     }
 
+    const inheritedExplicitCoach = resolveCoachingModel('anthropic/claude-haiku-4-5', { activeModel: active, registry })
+    expect(inheritedExplicitCoach.kind).toBe('ready')
+    if (inheritedExplicitCoach.kind === 'ready') {
+      expect(inheritedExplicitCoach.model.id).toBe('claude-haiku-4-5')
+      expect(inheritedExplicitCoach.source).toBe('explicit')
+    }
+
+    // model_reviewer: 'auto' uses ctx.model even when check model is explicitly pinned.
+    const reviewerAuto = resolveCoachingModel('anthropic/claude-haiku-4-5', {
+      activeModel: active,
+      registry,
+      reviewerModel: 'auto',
+    })
+    expect(reviewerAuto.kind).toBe('ready')
+    if (reviewerAuto.kind === 'ready') {
+      expect(reviewerAuto.model.id).toBe('claude-sonnet-4-5')
+      expect(reviewerAuto.source).toBe('session')
+    }
+
+    // Explicit model_reviewer overrides both check model: auto and model: off.
+    for (const baseModel of ['auto', 'off']) {
+      const reviewerExplicit = resolveCoachingModel(baseModel, {
+        activeModel: active,
+        registry,
+        reviewerModel: 'openrouter/moonshotai/kimi-k2.7-code',
+      })
+      expect(reviewerExplicit.kind).toBe('ready')
+      if (reviewerExplicit.kind === 'ready') {
+        expect(reviewerExplicit.spec).toBe('openrouter/moonshotai/kimi-k2.7-code')
+        expect(reviewerExplicit.source).toBe('explicit')
+      }
+    }
+
+    expect(resolveCoachingModel('auto', { activeModel: active, registry, reviewerModel: 'off' })).toMatchObject({
+      kind: 'missing',
+      spec: 'off',
+    })
+    expect(resolveCoachingModel('auto', { activeModel: active, registry, reviewerModel: 'noslash' })).toMatchObject({
+      kind: 'missing',
+      spec: 'noslash',
+    })
+    expect(resolveCoachingModel('auto', { activeModel: active, registry, reviewerModel: 'openai/missing' })).toMatchObject({
+      kind: 'missing',
+      spec: 'openai/missing',
+    })
+
     const explicit = resolveCheckModel('openrouter/moonshotai/kimi-k2.7-code', { activeModel: active, registry })
     expect(explicit.kind).toBe('ready')
     if (explicit.kind === 'ready') {
