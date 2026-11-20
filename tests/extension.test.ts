@@ -166,7 +166,7 @@ const createHarness = (opts: {
     },
   } as unknown as ExtensionAPI
 
-  createGrammarExtension({ agentDir, shutdownWaitMs: opts.shutdownWaitMs ?? 50 })(api)
+  createGrammarExtension({ agentDir, homeDir: join(agentDir, 'isolated-home'), env: {}, shutdownWaitMs: opts.shutdownWaitMs ?? 50 })(api)
 
   const emit = async (event: string, payload: unknown) => {
     if (event === 'session_start') {
@@ -475,6 +475,70 @@ describe('extension', () => {
       expect(readHistoryFile(join(h.agentDir, 'grammar-history.json')).fixes.length).toBe(2)
     } finally {
       h.cleanup()
+    }
+  })
+
+  test('migration banner shows once in TUI and is suppressed in print mode', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'prompt-grammar-ext-mig-'))
+    try {
+      const home = join(tmp, 'home')
+      const agentDir = join(home, '.pi', 'agent')
+      const agyCfgDir = join(home, '.gemini', 'config')
+      mkdirSync(agentDir, { recursive: true })
+      mkdirSync(agyCfgDir, { recursive: true })
+      writeFileSync(
+        join(agyCfgDir, 'grammar.json'),
+        JSON.stringify({ endpoint: 'http://localhost:11434', endpoint_model: 'qwen2.5:7b', display: 'reply' }),
+      )
+
+      const runSession = async (mode: ExtensionMode) => {
+        const notifications: string[] = []
+        const entries: unknown[] = []
+        const handlers = new Map<string, Array<(ev: any, ctx: any) => any>>()
+        const api = {
+          on: (ev: string, fn: any) => {
+            const l = handlers.get(ev) ?? []
+            l.push(fn)
+            handlers.set(ev, l)
+            return () => {}
+          },
+          registerCommand: () => {},
+          registerShortcut: () => {},
+          registerEntryRenderer: () => {},
+          appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
+        } as unknown as ExtensionAPI
+        createGrammarExtension({ agentDir, homeDir: home, env: {} })(api)
+        const ctx = {
+          mode,
+          hasUI: mode === 'tui' || mode === 'rpc',
+          cwd: tmp,
+          model: undefined,
+          scopedModels: [],
+          isProjectTrusted: () => true,
+          hasPendingMessages: () => false,
+          sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: () => null },
+          modelRegistry: { getAvailable: () => [], find: () => undefined, hasConfiguredAuth: () => false, getProviderAuth: async () => undefined, streamSimple: () => ({}) },
+          ui: { notify: (m: string) => notifications.push(m), setWidget: () => {} },
+        } as unknown as ExtensionContext
+        for (const fn of handlers.get('session_start') ?? []) {
+          await fn({ type: 'session_start', reason: 'startup' }, ctx)
+        }
+        return { notifications, entries }
+      }
+
+      // Print mode suppresses migration banner & report entry while migrating file once.
+      const printOut = await runSession('print')
+      expect(printOut.notifications.length).toBe(0)
+      expect(printOut.entries.length).toBe(0)
+
+      // Fresh agentDir in TUI emits one-line notify + endpoint report entry.
+      rmSync(join(agentDir, 'grammar.json'), { force: true })
+      const tuiOut = await runSession('tui')
+      expect(tuiOut.notifications.length).toBe(1)
+      expect(tuiOut.notifications[0]).toContain('Migrated grammar settings')
+      expect(tuiOut.entries.length).toBe(1)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
     }
   })
 })

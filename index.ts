@@ -17,6 +17,7 @@ import {
 } from './config'
 import type { Lists, Paths, Settings } from './config'
 import { ASK_MEMORY } from './history'
+import { migrateFromPriorBuilds } from './migrate'
 import { resolveCheckModel, runModelCall } from './model'
 import type { ResolvedModel } from './model'
 import { STREAK_FROM, formatReportPlain, linesOf, renderCheckEntry, renderReportEntry } from './render'
@@ -32,6 +33,8 @@ export type ExtensionFactoryOptions = {
   agentDir?: string
   now?: () => number
   shutdownWaitMs?: number
+  homeDir?: string
+  env?: Record<string, string | undefined>
 }
 
 type CheckOutcome = {
@@ -112,6 +115,7 @@ export const createGrammarExtension = (opts: ExtensionFactoryOptions = {}) => {
 
   return (pi: ExtensionAPI) => {
     let disposed = false
+    let migrationChecked = false
     let sessionState: SessionState = emptySession()
     let resolvedCheckModel: ResolvedModel = { kind: 'off' }
     let activeCtx: ExtensionContext | undefined
@@ -317,6 +321,21 @@ export const createGrammarExtension = (opts: ExtensionFactoryOptions = {}) => {
       activeCtx = ctx
       agentEnded = true
       clearPendingAndTimers()
+      if (!migrationChecked) {
+        migrationChecked = true
+        const mig = migrateFromPriorBuilds({ agentDir: getDir(), env: opts.env, homeDir: opts.homeDir })
+        if (mig.migrated && ctx.mode !== 'print' && ctx.mode !== 'json') {
+          if (mig.summary) {
+            ctx.ui.notify(mig.summary, 'info')
+          }
+          if (mig.endpointSnippet) {
+            pi.appendEntry<ReportEntry>('grammar-report', { kind: 'model', body: mig.endpointSnippet })
+            if (ctx.mode === 'rpc') {
+              ctx.ui.notify(mig.endpointSnippet, 'info')
+            }
+          }
+        }
+      }
       sessionState = rebuildSessionState(ctx.sessionManager.getBranch())
       refreshModel(ctx)
     })

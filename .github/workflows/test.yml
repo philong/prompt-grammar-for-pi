@@ -1,0 +1,23 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - if: github.event_name == 'schedule'
+        run: npm install --no-save @earendil-works/pi-coding-agent@latest @earendil-works/pi-tui@latest @earendil-works/pi-ai@latest
+      - run: npm run typecheck
+      - run: npm test
+      - run: bash -n tools/sync-from-agy.sh
