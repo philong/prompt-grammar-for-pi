@@ -84,7 +84,7 @@ Stored in `~/.pi/agent/grammar.json` (`0600` on POSIX) and optionally overridden
 | `model_reviewer` | `(inherit)` | Override model for `/grammar review` and `/grammar ask`: `auto` (active session model) or `<provider>/<modelId>`. Cannot be set in `.pi/grammar.json`. |
 | `system_prompt_append` | `""` | Text appended to the system prompt on prompt checks, and inherited by `/grammar review` and `/grammar ask` unless `system_prompt_append_reviewer` is set (e.g. `<\|think_off\|>` for Gemma 4). Cannot be set in `.pi/grammar.json`. |
 | `system_prompt_append_reviewer` | `(inherit)` | Override appended to the system prompt on `/grammar review` and `/grammar ask` (e.g. `<\|think_on\|>`, or `""` to append nothing). Cannot be set in `.pi/grammar.json`. |
-| `timeout_ms` | `30000` | Timeout (ms) for live prompt checks. |
+| `timeout_ms` | `120000` | Timeout (ms) for live prompt checks. |
 
 For example, to use a local model for checks while keeping `/grammar review` and `/grammar ask` on your active session model (and toggling thinking tags separately):
 
