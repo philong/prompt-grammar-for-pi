@@ -418,14 +418,14 @@ describe('commands', () => {
       })
       expect(clear).toMatchObject({ kind: 'notify', clearAsk: true })
 
-      expect(getGrammarCompletions('')?.map(c => c.value)).toContain('render')
-      expect(getGrammarCompletions('render ')?.map(c => c.value)).toEqual(['entry', 'widget', 'both', 'off'])
-      expect(getGrammarCompletions('ask memory ')?.map(c => c.value)).toEqual(['on', 'off'])
-      expect(getGrammarCompletions('config sys')?.map(c => c.value)).toEqual([
+      expect(getGrammarCompletions('')?.map(c => c.label)).toContain('render')
+      expect(getGrammarCompletions('render ')?.map(c => c.label)).toEqual(['entry', 'widget', 'both', 'off'])
+      expect(getGrammarCompletions('ask memory ')?.map(c => c.label)).toEqual(['on', 'off'])
+      expect(getGrammarCompletions('config sys')?.map(c => c.label)).toEqual([
         'system_prompt_append',
         'system_prompt_append_reviewer',
       ])
-      expect(getGrammarCompletions('model ', ['anthropic/claude-haiku-4-5'])?.map(c => c.value)).toEqual([
+      expect(getGrammarCompletions('model ', ['anthropic/claude-haiku-4-5'])?.map(c => c.label)).toEqual([
         'auto',
         'off',
         'anthropic/claude-haiku-4-5',
@@ -593,8 +593,11 @@ describe('commands', () => {
       expect(unsetReviewer).toMatchObject({ kind: 'notify', level: 'info' })
       expect(JSON.parse(readFileSync(env.paths.globalConfig, 'utf8')).model_reviewer).toBeUndefined()
 
-      expect(getGrammarCompletions('config mod')?.map(c => c.value)).toEqual(['model', 'model_reviewer'])
-      expect(getGrammarCompletions('config model_reviewer ', ['anthropic/claude-sonnet-4-5'])?.map(c => c.value)).toEqual([
+      expect(getGrammarCompletions('config mod')?.map(c => c.label)).toEqual(['model', 'model_reviewer'])
+      expect(getGrammarCompletions('config mod')?.map(c => c.value)).toEqual(['config model', 'config model_reviewer'])
+      expect(getGrammarCompletions('config model ')?.map(c => c.value)).toContain('config model auto')
+      expect(getGrammarCompletions('ren')?.map(c => c.value)).toEqual(['render'])
+      expect(getGrammarCompletions('config model_reviewer ', ['anthropic/claude-sonnet-4-5'])?.map(c => c.label)).toEqual([
         'auto',
         'unset',
         'anthropic/claude-sonnet-4-5',

@@ -248,8 +248,22 @@ const toItems = (values: readonly string[], filter: string, description?: string
   return matches.length > 0 ? matches : null
 }
 
-/** Provide autocomplete candidates for `/grammar <subcommand> ...`. */
+/**
+ * Provide autocomplete candidates for `/grammar <subcommand> ...`.
+ *
+ * Pi replaces the entire argument text with `item.value`, so each value carries the
+ * already-typed leading tokens (e.g. `config model`), while `label` stays the short token.
+ */
 export const getGrammarCompletions = (argumentPrefix: string, availableModels: readonly string[] = []): AutocompleteItem[] | null => {
+  const items = getTokenCompletions(argumentPrefix, availableModels)
+  if (!items) {
+    return null
+  }
+  const leading = argumentPrefix.replace(/\S*$/, '')
+  return items.map(item => ({ ...item, value: leading + item.value }))
+}
+
+const getTokenCompletions = (argumentPrefix: string, availableModels: readonly string[]): AutocompleteItem[] | null => {
   const hasTrailingSpace = /\s$/.test(argumentPrefix)
   const parts = argumentPrefix.trim() === '' ? [] : argumentPrefix.trim().split(/\s+/)
   if (parts.length === 0) {
